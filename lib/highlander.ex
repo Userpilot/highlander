@@ -140,6 +140,7 @@ defmodule Highlander do
     # causing pid2 to go to monitor mode automatically.
 
     # Always let pid1 (the first registered process) keep the name
+    Logger.warning("Highlanderhandle_conflict: #{inspect(pid1)} vs #{inspect(pid2)}")
     pid1
   end
 
