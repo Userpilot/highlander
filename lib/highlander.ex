@@ -76,7 +76,8 @@ defmodule Highlander do
 
     %{
       id: child_child_spec.id,
-      start: {GenServer, :start_link, [__MODULE__, child_child_spec, []]}
+      start: {GenServer, :start_link, [__MODULE__, child_child_spec, []]},
+      restart: :permanent
     }
   end
 
@@ -112,11 +113,6 @@ defmodule Highlander do
     end
   end
 
-  def handle_info({:EXIT, _pid, :name_conflict}, %{pid: pid} = state) do
-    :ok = Supervisor.stop(pid, :shutdown)
-    {:stop, {:shutdown, :name_conflict}, Map.delete(state, :pid)}
-  end
-
   def handle_info(:retry_register, state) do
     # Retry registration after node disconnections or errors
     {:noreply, register(state)}
@@ -135,29 +131,16 @@ defmodule Highlander do
 
   defp handle_conflict(_name, pid1, pid2) do
     # During node disconnections, :global may call this even for already-registered processes
-    # Try to determine which process should keep the name by checking if either is self()
-    # and if self() has a child running. If self() is pid1 and we have a child, keep pid1.
-    # Otherwise, prefer keeping the process that's already registered (check via whereis_name).
-    # For simplicity, we'll keep pid1 (the first one) as default, but this should rarely
-    # be called if we prevent re-registration when already registered.
+    # We need to determine which process should keep the name.
+    # The process that was registered first (pid1) should keep it.
+    # If we're pid2, we should give up and let pid1 keep it.
+    # Highlander will then monitor pid1 and take over if it fails.
+    #
+    # Note: When we return pid1, :global.register_name will return :no for pid2,
+    # causing pid2 to go to monitor mode automatically.
 
-    # If pid1 is self(), try to check if we should keep the name
-    cond do
-      pid1 == self() ->
-        # We're pid1, keep pid1 (self) and exit pid2
-        Process.exit(pid2, :name_conflict)
-        pid1
-
-      pid2 == self() ->
-        # We're pid2, but pid1 was registered first, so exit self
-        Process.exit(self(), :name_conflict)
-        pid1
-
-      true ->
-        # Neither is self (shouldn't happen, but handle it)
-        Process.exit(pid2, :name_conflict)
-        pid1
-    end
+    # Always let pid1 (the first registered process) keep the name
+    pid1
   end
 
   defp register(state) do
