@@ -32,7 +32,8 @@ defmodule Highlander do
 
   def handle_info({:EXIT, _pid, :name_conflict}, %{pid: pid} = state) do
     :ok = Supervisor.stop(pid, :shutdown)
-    {:stop, {:shutdown, :name_conflict}, Map.delete(state, :pid)}
+    state_without_pid = Map.delete(state, :pid)
+    {:noreply, monitor(state_without_pid)}
   end
 
   @impl true
