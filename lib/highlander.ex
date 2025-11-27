@@ -142,19 +142,21 @@ defmodule Highlander do
     # be called if we prevent re-registration when already registered.
 
     # If pid1 is self(), try to check if we should keep the name
-    if pid1 == self() do
-      # We're pid1, check if we should keep the name
-      # For now, keep pid1 (self) and exit pid2
-      Process.exit(pid2, :name_conflict)
-      pid1
-    elsif pid2 == self() do
-      # We're pid2, but pid1 was registered first, so exit self
-      Process.exit(self(), :name_conflict)
-      pid1
-    else
-      # Neither is self (shouldn't happen, but handle it)
-      Process.exit(pid2, :name_conflict)
-      pid1
+    cond do
+      pid1 == self() ->
+        # We're pid1, keep pid1 (self) and exit pid2
+        Process.exit(pid2, :name_conflict)
+        pid1
+
+      pid2 == self() ->
+        # We're pid2, but pid1 was registered first, so exit self
+        Process.exit(self(), :name_conflict)
+        pid1
+
+      true ->
+        # Neither is self (shouldn't happen, but handle it)
+        Process.exit(pid2, :name_conflict)
+        pid1
     end
   end
 
