@@ -154,15 +154,17 @@ defmodule Highlander do
     # If we already have a pid, verify we're still registered
     if Map.has_key?(state, :pid) do
       # Check if we're still the registered owner
-      case :global.whereis_name(name(state)) do
-        self() ->
+      registered_pid = :global.whereis_name(name(state))
+
+      cond do
+        registered_pid == self() ->
           # We're still registered, keep current state
           Logger.debug(
             "Highlander for #{inspect(state.child_spec.id)} already registered and running"
           )
           state
 
-        :undefined ->
+        registered_pid == :undefined ->
           # We have a pid but we're not registered - this can happen during scale-down
           # Stop the supervisor and re-register
           Logger.warning(
@@ -173,10 +175,10 @@ defmodule Highlander do
           state_without_pid = Map.delete(state, :pid)
           register(state_without_pid)
 
-        other_pid ->
+        true ->
           # Someone else is registered, stop our supervisor and monitor them
           Logger.warning(
-            "Highlander for #{inspect(state.child_spec.id)} lost registration to #{inspect(other_pid)}. Stopping supervisor and monitoring..."
+            "Highlander for #{inspect(state.child_spec.id)} lost registration to #{inspect(registered_pid)}. Stopping supervisor and monitoring..."
           )
 
           :ok = Supervisor.stop(state.pid, :shutdown)
@@ -225,13 +227,15 @@ defmodule Highlander do
     # Ensure we're in the correct state - either registered and running, or monitoring
     if Map.has_key?(state, :pid) do
       # We think we're registered, verify
-      case :global.whereis_name(name(state)) do
-        self() ->
+      registered_pid = :global.whereis_name(name(state))
+
+      cond do
+        registered_pid == self() ->
           # We're registered, schedule next check
           schedule_registration_check()
           state
 
-        :undefined ->
+        registered_pid == :undefined ->
           # Lost registration, re-register
           Logger.warning(
             "Highlander for #{inspect(state.child_spec.id)} lost registration. Re-registering..."
@@ -241,10 +245,10 @@ defmodule Highlander do
           state_without_pid = Map.delete(state, :pid)
           register(state_without_pid)
 
-        other_pid ->
+        true ->
           # Someone else is registered, monitor them
           Logger.warning(
-            "Highlander for #{inspect(state.child_spec.id)} found other registered process #{inspect(other_pid)}. Stopping supervisor and monitoring..."
+            "Highlander for #{inspect(state.child_spec.id)} found other registered process #{inspect(registered_pid)}. Stopping supervisor and monitoring..."
           )
 
           :ok = Supervisor.stop(state.pid, :shutdown)
