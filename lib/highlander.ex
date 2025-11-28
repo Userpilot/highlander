@@ -118,6 +118,12 @@ defmodule Highlander do
     {:noreply, register(state)}
   end
 
+  def handle_info(:check_registration, state) do
+    # Periodic check to ensure we're still registered or re-register if needed
+    # This handles the case where all processes unregister during scale-down
+    {:noreply, ensure_registered(state)}
+  end
+
   @impl true
   def terminate(reason, %{pid: pid}) do
     :ok = Supervisor.stop(pid, reason)
@@ -145,14 +151,38 @@ defmodule Highlander do
   end
 
   defp register(state) do
-    # If we already have a pid, we're already registered and running
-    # Don't try to register again
+    # If we already have a pid, verify we're still registered
     if Map.has_key?(state, :pid) do
-      Logger.debug(
-        "Highlander for #{inspect(state.child_spec.id)} already registered and running, skipping registration"
-      )
+      # Check if we're still the registered owner
+      case :global.whereis_name(name(state)) do
+        self() ->
+          # We're still registered, keep current state
+          Logger.debug(
+            "Highlander for #{inspect(state.child_spec.id)} already registered and running"
+          )
+          state
 
-      state
+        :undefined ->
+          # We have a pid but we're not registered - this can happen during scale-down
+          # Stop the supervisor and re-register
+          Logger.warning(
+            "Highlander for #{inspect(state.child_spec.id)} has pid but is not registered. Re-registering..."
+          )
+
+          :ok = Supervisor.stop(state.pid, :shutdown)
+          state_without_pid = Map.delete(state, :pid)
+          register(state_without_pid)
+
+        other_pid ->
+          # Someone else is registered, stop our supervisor and monitor them
+          Logger.warning(
+            "Highlander for #{inspect(state.child_spec.id)} lost registration to #{inspect(other_pid)}. Stopping supervisor and monitoring..."
+          )
+
+          :ok = Supervisor.stop(state.pid, :shutdown)
+          state_without_pid = Map.delete(state, :pid)
+          monitor(state_without_pid)
+      end
     else
       try do
         case :global.register_name(name(state), self(), &handle_conflict/3) do
@@ -191,9 +221,66 @@ defmodule Highlander do
     end
   end
 
+  defp ensure_registered(state) do
+    # Ensure we're in the correct state - either registered and running, or monitoring
+    if Map.has_key?(state, :pid) do
+      # We think we're registered, verify
+      case :global.whereis_name(name(state)) do
+        self() ->
+          # We're registered, schedule next check
+          schedule_registration_check()
+          state
+
+        :undefined ->
+          # Lost registration, re-register
+          Logger.warning(
+            "Highlander for #{inspect(state.child_spec.id)} lost registration. Re-registering..."
+          )
+
+          :ok = Supervisor.stop(state.pid, :shutdown)
+          state_without_pid = Map.delete(state, :pid)
+          register(state_without_pid)
+
+        other_pid ->
+          # Someone else is registered, monitor them
+          Logger.warning(
+            "Highlander for #{inspect(state.child_spec.id)} found other registered process #{inspect(other_pid)}. Stopping supervisor and monitoring..."
+          )
+
+          :ok = Supervisor.stop(state.pid, :shutdown)
+          state_without_pid = Map.delete(state, :pid)
+          monitor(state_without_pid)
+      end
+    else
+      # We're monitoring, verify the monitored process still exists
+      if Map.has_key?(state, :ref) do
+        # We have a ref, check if the process is still alive
+        case :global.whereis_name(name(state)) do
+          :undefined ->
+            # No one is registered, try to register
+            register(state)
+
+          pid ->
+            # Process is still registered, keep monitoring
+            schedule_registration_check()
+            state
+        end
+      else
+        # No pid and no ref, try to register
+        register(state)
+      end
+    end
+  end
+
+  defp schedule_registration_check do
+    # Schedule a periodic check every 5 seconds to ensure we're still registered
+    Process.send_after(self(), :check_registration, 5000)
+  end
+
   defp start(state) do
     case Supervisor.start_link([state.child_spec], strategy: :one_for_one) do
       {:ok, pid} ->
+        schedule_registration_check()
         Map.put(state, :pid, pid)
 
       {:error, reason} ->
@@ -211,10 +298,12 @@ defmodule Highlander do
     try do
       case :global.whereis_name(name(state)) do
         :undefined ->
+          # No one is registered, try to register immediately
           register(state)
 
         pid ->
           ref = Process.monitor(pid)
+          schedule_registration_check()
           %{child_spec: state.child_spec, ref: ref}
       end
     rescue
