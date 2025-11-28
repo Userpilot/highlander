@@ -146,7 +146,15 @@ defmodule Highlander do
     # causing pid2 to go to monitor mode automatically.
 
     # Always let pid1 (the first registered process) keep the name
-    Logger.warning("Highlanderhandle_conflict: #{inspect(pid1)} vs #{inspect(pid2)}")
+    Logger.warning(
+      "Highlander conflict: #{inspect(pid1)} (winner) vs #{inspect(pid2)} (loser) for #{inspect(self())}"
+    )
+
+    # Verify we're pid2 (the loser)
+    if pid2 == self() do
+      Logger.info("Highlander #{inspect(self())} lost conflict, will monitor #{inspect(pid1)}")
+    end
+
     pid1
   end
 
@@ -188,8 +196,35 @@ defmodule Highlander do
     else
       try do
         case :global.register_name(name(state), self(), &handle_conflict/3) do
-          :yes -> start(state)
-          :no -> monitor(state)
+          :yes ->
+            # CRITICAL: Double-check we're still registered before starting
+            # This prevents race conditions where multiple processes all get :yes
+            registered_pid = :global.whereis_name(name(state))
+
+            cond do
+              registered_pid == self() ->
+                # We're confirmed as the registered owner, safe to start
+                start(state)
+
+              registered_pid == :undefined ->
+                # Lost registration between register_name and whereis_name
+                # Try to register again
+                Logger.warning(
+                  "Highlander for #{inspect(state.child_spec.id)} lost registration immediately after registering. Retrying..."
+                )
+                register(state)
+
+              true ->
+                # Someone else registered before we could start
+                # This shouldn't happen with :yes, but handle it anyway
+                Logger.warning(
+                  "Highlander for #{inspect(state.child_spec.id)} registration conflict detected. Monitoring #{inspect(registered_pid)}..."
+                )
+                monitor(state)
+            end
+
+          :no ->
+            monitor(state)
         end
       rescue
         e ->
